@@ -3,82 +3,125 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>El Paso Micro-Climate Map</title>
+    <title>El Paso Nuanced Micro-Climate Map</title>
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <style>
-        body { font-family: sans-serif; margin: 0; padding: 0; }
+        body { margin: 0; padding: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
         #map { width: 100vw; height: 100vh; }
         .info-box { 
-            position: absolute; bottom: 20px; left: 20px; 
-            background: white; padding: 15px; border-radius: 5px; 
-            box-shadow: 0 0 15px rgba(0,0,0,0.2); z-index: 1000;
+            position: absolute; bottom: 30px; left: 30px; 
+            background: rgba(255, 255, 255, 0.95); padding: 15px; border-radius: 8px; 
+            box-shadow: 0 4px 15px rgba(0,0,0,0.15); z-index: 1000; min-width: 200px;
         }
+        .legend {
+            line-height: 18px; color: #555; background: white; padding: 10px;
+            border-radius: 5px; box-shadow: 0 0 15px rgba(0,0,0,0.2);
+        }
+        .legend i { width: 18px; height: 18px; float: left; margin-right: 8px; opacity: 0.8; }
     </style>
 </head>
 <body>
 
     <div class="info-box">
-        <h3>El Paso Micro-Climate</h3>
-        <p>Hover over a grid section to see local surface temperatures.</p>
-        <div id="temp-display">Temperature: --</div>
+        <h3 style="margin: 0 0 10px 0;">El Paso Heat Variance</h3>
+        <p style="margin: 0 0 10px 0; font-size: 14px; color: #666;">July 2023 Surface Temperatures</p>
+        <div id="temp-display" style="font-size: 18px; font-weight: bold; color: #333;">Hover over a grid cell</div>
     </div>
 
     <div id="map"></div>
 
     <script>
-        // Initialize the map focused over El Paso
         const map = L.map('map').setView([31.7619, -106.4850], 10);
 
-        // Add a clean basemap so our data stands out
         L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
-            attribution: '&copy; OpenStreetMap contributors'
+            attribution: '&copy; OpenStreetMap'
         }).addTo(map);
 
-        // Function to color-code grid cells dynamically based on heat intensity (in Celsius)
-        function getColor(temp) {
-            return temp > 45 ? '#800026' :
-                   temp > 40 ? '#BD0026' :
-                   temp > 35 ? '#E31A1C' :
-                   temp > 30 ? '#FC4E2A' :
-                   temp > 25 ? '#FD8D3C' :
-                               '#FEB24C';
+        // Global variable to store our dynamic quantile breaks
+        let breaks = [];
+
+        // Helper function to calculate quantile thresholds based on the actual data array
+        function calculateQuantiles(values, numBands) {
+            values.sort((a, b) => a - b);
+            let quantiles = [];
+            for (let i = 1; i < numBands; i++) {
+                let index = Math.floor((values.length / numBands) * i);
+                quantiles.push(values[index]);
+            }
+            return quantiles;
         }
 
-        // Apply styles to each grid polygon block
-        function styleFeature(feature) {
-            return {
-                fillColor: getColor(feature.properties.mean),
-                weight: 1,
-                opacity: 0.4,
-                color: 'white',
-                fillOpacity: 0.7
-            };
+        // Divergent color palette maximizing visual contrast
+        function getColor(temp, classBreaks) {
+            return temp > classBreaks[3] ? '#bd0026' : // Extreme Heat
+                   temp > classBreaks[2] ? '#f03b20' : // High Heat
+                   temp > classBreaks[1] ? '#fd8d3c' : // Moderate Heat
+                   temp > classBreaks[0] ? '#fecc5c' : // Warmer
+                                           '#ffffb2';  // Coolest relative areas
         }
 
-        // Fetch the granular file produced by Earth Engine
-        fetch('ElPaso_Granular_LST_July2023.geojson')
+        fetch('ElPaso_Granular_LST_Fahrenheit_July2023.geojson')
             .then(res => res.json())
             .then(geojsonData => {
-                L.geoJSON(geojsonData, {
-                    style: styleFeature,
+                
+                // 1. Extract all temperature values to figure out the statistical distribution
+                const allTemps = geojsonData.features
+                    .map(f => f.properties.mean)
+                    .filter(val => val !== null && !isNaN(val));
+
+                // 2. Build 5 custom classes out of the specific dataset range
+                breaks = calculateQuantiles(allTemps, 5);
+
+                // 3. Render the grid polygons with the calculated custom breaks
+                const geoJsonLayer = L.geoJSON(geojsonData, {
+                    style: function(feature) {
+                        return {
+                            fillColor: getColor(feature.properties.mean, breaks),
+                            weight: 0.5,
+                            opacity: 0.2,
+                            color: 'white',
+                            fillOpacity: 0.75
+                        };
+                    },
                     onEachFeature: function(feature, layer) {
-                        // Create interactive hover states
                         layer.on({
                             mouseover: function(e) {
-                                const temp = feature.properties.mean.toFixed(2);
-                                document.getElementById('temp-display').innerHTML = `<b>Temperature:</b> ${temp} °C`;
-                                layer.setStyle({ fillOpacity: 0.9, weight: 2 });
+                                const temp = feature.properties.mean.toFixed(1);
+                                document.getElementById('temp-display').innerHTML = `${temp} °F`;
+                                layer.setStyle({ fillOpacity: 0.95, weight: 1.5, color: '#333' });
                             },
                             mouseout: function(e) {
-                                document.getElementById('temp-display').innerHTML = "Temperature: --";
-                                layer.setStyle({ fillOpacity: 0.7, weight: 1 });
+                                document.getElementById('temp-display').innerHTML = "Hover over a grid cell";
+                                geoJsonLayer.resetStyle(layer);
                             }
                         });
                     }
                 }).addTo(map);
+
+                // 4. Add a dynamic map legend showing the exact class break ranges
+                const legend = L.control({position: 'topright'});
+                legend.onAdd = function (map) {
+                    const div = L.DomUtil.create('div', 'legend');
+                    const labels = [];
+                    // Create an array representing our structural bracket limits
+                    const limits = [Math.min(...allTemps), ...breaks];
+                    
+                    div.innerHTML = '<b style="display:block; margin-bottom:5px;">Temp Range (°F)</b>';
+                    for (let i = 0; i < limits.length; i++) {
+                        let from = limits[i].toFixed(1);
+                        let to = limits[i + 1] ? limits[i + 1].toFixed(1) : Math.max(...allTemps).toFixed(1);
+                        
+                        div.innerHTML +=
+                            '<i style="background:' + getColor(limits[i] + 0.1, breaks) + '"></i> ' +
+                            from + (to ? ' &ndash; ' + to + '<br>' : '+');
+                    }
+                    return div;
+                };
+                legend.addTo(map);
+
             })
-            .catch(err => console.error("Error parsing GeoJSON:", err));
+            .catch(err => console.error("Error loading or styling GeoJSON:", err));
     </script>
 </body>
 </html>
