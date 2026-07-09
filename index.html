@@ -3,42 +3,32 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>El Paso Time-Series Climate Map</title>
+    <title>El Paso Dynamic Timeline Dashboard</title>
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <style>
         body { margin: 0; padding: 0; font-family: 'Segoe UI', sans-serif; }
         #map { width: 100vw; height: 100vh; }
-        
-        /* Dashboard Control Box */
         .control-panel { 
             position: absolute; bottom: 30px; left: 30px; 
             background: rgba(255, 255, 255, 0.95); padding: 20px; border-radius: 8px; 
-            box-shadow: 0 4px 15px rgba(0,0,0,0.2); z-index: 1000; width: 320px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.2); z-index: 1000; width: 340px;
         }
         .slider-container { margin-top: 15px; display: flex; align-items: center; gap: 10px; }
         input[type=range] { flex-grow: 1; cursor: pointer; }
-        
-        .legend {
-            line-height: 18px; color: #555; background: white; padding: 10px;
-            border-radius: 5px; box-shadow: 0 0 15px rgba(0,0,0,0.2);
-        }
+        .legend { line-height: 18px; color: #555; background: white; padding: 10px; border-radius: 5px; box-shadow: 0 0 15px rgba(0,0,0,0.2); }
         .legend i { width: 18px; height: 18px; float: left; margin-right: 8px; opacity: 0.8; }
     </style>
 </head>
 <body>
 
     <div class="control-panel">
-        <h3 style="margin: 0 0 5px 0;">El Paso Micro-Climates</h3>
-        <p style="margin: 0 0 15px 0; font-size: 13px; color: #666;">Drag slider to change months</p>
-        
-        <div id="active-date" style="font-size: 20px; font-weight: bold; color: #bd0026;">Loading Data...</div>
+        <h3 style="margin: 0 0 5px 0;">El Paso Micro-Climate Timeline</h3>
+        <p style="margin: 0 0 15px 0; font-size: 13px; color: #666;">Historical Landsat Surface Temperature</p>
+        <div id="active-date" style="font-size: 22px; font-weight: bold; color: #bd0026;">Analyzing GeoJSON...</div>
         <div id="temp-display" style="font-size: 14px; color: #333; margin-top: 5px;">Hover over cells for temperature</div>
-        
         <div class="slider-container">
-            <span>June</span>
-            <input type="range" id="time-slider" min="0" max="2" value="0" disabled>
-            <span>Aug</span>
+            <input type="range" id="time-slider" min="0" max="0" value="0" disabled>
         </div>
     </div>
 
@@ -48,11 +38,11 @@
         const map = L.map('map').setView([31.7619, -106.4850], 10);
         L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', { attribution: '&copy; OpenStreetMap' }).addTo(map);
 
-        // Timeline mapping configuration
-        const timeSteps = ["2023-06", "2023-07", "2023-08"];
-        const monthsDisplay = ["June 2023", "July 2023", "August 2023"];
+        // Create a dedicated layer group for the grid
+        const gridLayerGroup = L.layerGroup().addTo(map);
         
-        let geoJsonLayer;
+        let uniqueTimestamps = [];
+        let geoJsonRawData = null;
         let globalBreaks = [];
 
         function calculateQuantiles(values, numBands) {
@@ -72,60 +62,80 @@
                    temp > classBreaks[0] ? '#fecc5c' : '#ffffb2';
         }
 
-        // Main execution data load
-        fetch('ElPaso_MultiMonth_LST_2023.geojson')
+        // Helper to cleanly map "2023-01" to "January 2023" for display
+        function formatTimeLabel(str) {
+            const parts = str.split('-');
+            const months = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+            return `${months[parseInt(parts[1]) - 1]} ${parts[0]}`;
+        }
+
+        // Function to filter data and draw the active map layer
+        function updateMapDisplay(timeID) {
+            // 1. Wipe the current elements clean off the map
+            gridLayerGroup.clearLayers();
+
+            // 2. Generate the active layer using only matching timestamps
+            const subLayer = L.geoJSON(geoJsonRawData, {
+                filter: function(f) { return f.properties.time_id === timeID; },
+                style: function(f) {
+                    return {
+                        fillColor: getColor(f.properties.mean, globalBreaks),
+                        weight: 0.3, opacity: 0.1, color: 'white', fillOpacity: 0.75
+                    };
+                },
+                onEachFeature: function(feature, layer) {
+                    layer.on({
+                        mouseover: function() {
+                            document.getElementById('temp-display').innerHTML = `<b>Local Temp:</b> ${feature.properties.mean.toFixed(1)} °F`;
+                            layer.setStyle({ fillOpacity: 0.95, weight: 1.5, color: '#333' });
+                        },
+                        mouseout: function() {
+                            document.getElementById('temp-display').innerHTML = "Hover over cells for temperature";
+                            subLayer.resetStyle(layer);
+                        }
+                    });
+                }
+            });
+
+            // 3. Add the filtered layer back to the group
+            gridLayerGroup.addLayer(subLayer);
+            document.getElementById('active-date').innerText = formatTimeLabel(timeID);
+        }
+
+        // Fetch data
+        fetch('ElPaso_Timeline_LST_2023_Present.geojson')
             .then(res => res.json())
-            .then(geojsonData => {
+            .then(data => {
+                geoJsonRawData = data;
+
+                // 1. Gather all unique timestamps present inside the exported file
+                const timeSet = new Set();
+                const allTemps = [];
+                data.features.forEach(f => {
+                    if(f.properties.time_id) timeSet.add(f.properties.time_id);
+                    if(f.properties.mean !== null && !isNaN(f.properties.mean)) allTemps.push(f.properties.mean);
+                });
                 
-                // 1. Compute baseline statistical breaks using ALL data points from ALL months
-                const allTemps = geojsonData.features.map(f => f.properties.mean).filter(v => v !== null && !isNaN(v));
+                // Sort timestamps chronologically (e.g., 2023-01, 2023-02...)
+                uniqueTimestamps = Array.from(timeSet).sort();
                 globalBreaks = calculateQuantiles(allTemps, 5);
 
-                // 2. Initialize the GeoJson Layer structure onto map
-                geoJsonLayer = L.geoJSON(geojsonData, {
-                    style: function(feature) {
-                        return {
-                            fillColor: getColor(feature.properties.mean, globalBreaks),
-                            weight: 0.3, opacity: 0.1, color: 'white', fillOpacity: 0.75
-                        };
-                    },
-                    filter: function(feature) {
-                        // Crucial baseline filtering: map only active timeframe step features first
-                        return feature.properties.time_id === timeSteps[0];
-                    },
-                    onEachFeature: function(feature, layer) {
-                        layer.on({
-                            mouseover: function() {
-                                document.getElementById('temp-display').innerHTML = `<b>Local Temp:</b> ${feature.properties.mean.toFixed(1)} °F`;
-                                layer.setStyle({ fillOpacity: 0.95, weight: 1.5, color: '#333' });
-                            },
-                            mouseout: function() {
-                                document.getElementById('temp-display').innerHTML = "Hover over cells for temperature";
-                                geoJsonLayer.resetStyle(layer);
-                            }
-                        });
-                    }
-                }).addTo(map);
-
-                // 3. Unlock slider and ready UI panel
+                // 2. Configure the HTML slider steps based on the data timeline
                 const slider = document.getElementById('time-slider');
+                slider.max = uniqueTimestamps.length - 1;
+                slider.value = 0;
                 slider.disabled = false;
-                document.getElementById('active-date').innerText = monthsDisplay[0];
 
-                // 4. Implement Time Slider interactive logic
+                // 3. Render the initial starting month
+                updateMapDisplay(uniqueTimestamps[0]);
+
+                // 4. Listen for slider inputs to trigger updates
                 slider.addEventListener('input', function(e) {
-                    const selectedIndex = parseInt(e.target.value);
-                    const targetTimeID = timeSteps[selectedIndex];
-                    
-                    // Update Label Text
-                    document.getElementById('active-date').innerText = monthsDisplay[selectedIndex];
-                    
-                    // Trigger dynamic layer re-filter swap on map
-                    geoJsonLayer.clearLayers();
-                    geoJsonLayer.addData(geojsonData);
+                    const index = parseInt(e.target.value);
+                    updateMapDisplay(uniqueTimestamps[index]);
                 });
 
-                // 5. Append Static Constant Scale Legend
+                // 5. Append Legend
                 const legend = L.control({position: 'topright'});
                 legend.onAdd = function () {
                     const div = L.DomUtil.create('div', 'legend');
@@ -140,7 +150,10 @@
                 };
                 legend.addTo(map);
             })
-            .catch(err => console.error("Error building time series application mapping layers:", err));
+            .catch(err => {
+                console.error("Error configuration parsing:", err);
+                document.getElementById('active-date').innerText = "Failed to load map";
+            });
     </script>
 </body>
 </html>
