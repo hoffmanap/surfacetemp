@@ -3,17 +3,22 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>El Paso Nuanced Micro-Climate Map</title>
+    <title>El Paso Time-Series Climate Map</title>
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <style>
-        body { margin: 0; padding: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        body { margin: 0; padding: 0; font-family: 'Segoe UI', sans-serif; }
         #map { width: 100vw; height: 100vh; }
-        .info-box { 
+        
+        /* Dashboard Control Box */
+        .control-panel { 
             position: absolute; bottom: 30px; left: 30px; 
-            background: rgba(255, 255, 255, 0.95); padding: 15px; border-radius: 8px; 
-            box-shadow: 0 4px 15px rgba(0,0,0,0.15); z-index: 1000; min-width: 200px;
+            background: rgba(255, 255, 255, 0.95); padding: 20px; border-radius: 8px; 
+            box-shadow: 0 4px 15px rgba(0,0,0,0.2); z-index: 1000; width: 320px;
         }
+        .slider-container { margin-top: 15px; display: flex; align-items: center; gap: 10px; }
+        input[type=range] { flex-grow: 1; cursor: pointer; }
+        
         .legend {
             line-height: 18px; color: #555; background: white; padding: 10px;
             border-radius: 5px; box-shadow: 0 0 15px rgba(0,0,0,0.2);
@@ -23,25 +28,33 @@
 </head>
 <body>
 
-    <div class="info-box">
-        <h3 style="margin: 0 0 10px 0;">El Paso Heat Variance</h3>
-        <p style="margin: 0 0 10px 0; font-size: 14px; color: #666;">July 2023 Surface Temperatures</p>
-        <div id="temp-display" style="font-size: 18px; font-weight: bold; color: #333;">Hover over a grid cell</div>
+    <div class="control-panel">
+        <h3 style="margin: 0 0 5px 0;">El Paso Micro-Climates</h3>
+        <p style="margin: 0 0 15px 0; font-size: 13px; color: #666;">Drag slider to change months</p>
+        
+        <div id="active-date" style="font-size: 20px; font-weight: bold; color: #bd0026;">Loading Data...</div>
+        <div id="temp-display" style="font-size: 14px; color: #333; margin-top: 5px;">Hover over cells for temperature</div>
+        
+        <div class="slider-container">
+            <span>June</span>
+            <input type="range" id="time-slider" min="0" max="2" value="0" disabled>
+            <span>Aug</span>
+        </div>
     </div>
 
     <div id="map"></div>
 
     <script>
         const map = L.map('map').setView([31.7619, -106.4850], 10);
+        L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', { attribution: '&copy; OpenStreetMap' }).addTo(map);
 
-        L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
-            attribution: '&copy; OpenStreetMap'
-        }).addTo(map);
+        // Timeline mapping configuration
+        const timeSteps = ["2023-06", "2023-07", "2023-08"];
+        const monthsDisplay = ["June 2023", "July 2023", "August 2023"];
+        
+        let geoJsonLayer;
+        let globalBreaks = [];
 
-        // Global variable to store our dynamic quantile breaks
-        let breaks = [];
-
-        // Helper function to calculate quantile thresholds based on the actual data array
         function calculateQuantiles(values, numBands) {
             values.sort((a, b) => a - b);
             let quantiles = [];
@@ -52,76 +65,82 @@
             return quantiles;
         }
 
-        // Divergent color palette maximizing visual contrast
         function getColor(temp, classBreaks) {
-            return temp > classBreaks[3] ? '#bd0026' : // Extreme Heat
-                   temp > classBreaks[2] ? '#f03b20' : // High Heat
-                   temp > classBreaks[1] ? '#fd8d3c' : // Moderate Heat
-                   temp > classBreaks[0] ? '#fecc5c' : // Warmer
-                                           '#ffffb2';  // Coolest relative areas
+            return temp > classBreaks[3] ? '#bd0026' :
+                   temp > classBreaks[2] ? '#f03b20' :
+                   temp > classBreaks[1] ? '#fd8d3c' :
+                   temp > classBreaks[0] ? '#fecc5c' : '#ffffb2';
         }
 
-        fetch('ElPaso_Granular_LST_Fahrenheit_July2023.geojson')
+        // Main execution data load
+        fetch('ElPaso_MultiMonth_LST_2023.geojson')
             .then(res => res.json())
             .then(geojsonData => {
                 
-                // 1. Extract all temperature values to figure out the statistical distribution
-                const allTemps = geojsonData.features
-                    .map(f => f.properties.mean)
-                    .filter(val => val !== null && !isNaN(val));
+                // 1. Compute baseline statistical breaks using ALL data points from ALL months
+                const allTemps = geojsonData.features.map(f => f.properties.mean).filter(v => v !== null && !isNaN(v));
+                globalBreaks = calculateQuantiles(allTemps, 5);
 
-                // 2. Build 5 custom classes out of the specific dataset range
-                breaks = calculateQuantiles(allTemps, 5);
-
-                // 3. Render the grid polygons with the calculated custom breaks
-                const geoJsonLayer = L.geoJSON(geojsonData, {
+                // 2. Initialize the GeoJson Layer structure onto map
+                geoJsonLayer = L.geoJSON(geojsonData, {
                     style: function(feature) {
                         return {
-                            fillColor: getColor(feature.properties.mean, breaks),
-                            weight: 0.5,
-                            opacity: 0.2,
-                            color: 'white',
-                            fillOpacity: 0.75
+                            fillColor: getColor(feature.properties.mean, globalBreaks),
+                            weight: 0.3, opacity: 0.1, color: 'white', fillOpacity: 0.75
                         };
+                    },
+                    filter: function(feature) {
+                        // Crucial baseline filtering: map only active timeframe step features first
+                        return feature.properties.time_id === timeSteps[0];
                     },
                     onEachFeature: function(feature, layer) {
                         layer.on({
-                            mouseover: function(e) {
-                                const temp = feature.properties.mean.toFixed(1);
-                                document.getElementById('temp-display').innerHTML = `${temp} °F`;
+                            mouseover: function() {
+                                document.getElementById('temp-display').innerHTML = `<b>Local Temp:</b> ${feature.properties.mean.toFixed(1)} °F`;
                                 layer.setStyle({ fillOpacity: 0.95, weight: 1.5, color: '#333' });
                             },
-                            mouseout: function(e) {
-                                document.getElementById('temp-display').innerHTML = "Hover over a grid cell";
+                            mouseout: function() {
+                                document.getElementById('temp-display').innerHTML = "Hover over cells for temperature";
                                 geoJsonLayer.resetStyle(layer);
                             }
                         });
                     }
                 }).addTo(map);
 
-                // 4. Add a dynamic map legend showing the exact class break ranges
-                const legend = L.control({position: 'topright'});
-                legend.onAdd = function (map) {
-                    const div = L.DomUtil.create('div', 'legend');
-                    const labels = [];
-                    // Create an array representing our structural bracket limits
-                    const limits = [Math.min(...allTemps), ...breaks];
+                // 3. Unlock slider and ready UI panel
+                const slider = document.getElementById('time-slider');
+                slider.disabled = false;
+                document.getElementById('active-date').innerText = monthsDisplay[0];
+
+                // 4. Implement Time Slider interactive logic
+                slider.addEventListener('input', function(e) {
+                    const selectedIndex = parseInt(e.target.value);
+                    const targetTimeID = timeSteps[selectedIndex];
                     
+                    // Update Label Text
+                    document.getElementById('active-date').innerText = monthsDisplay[selectedIndex];
+                    
+                    // Trigger dynamic layer re-filter swap on map
+                    geoJsonLayer.clearLayers();
+                    geoJsonLayer.addData(geojsonData);
+                });
+
+                // 5. Append Static Constant Scale Legend
+                const legend = L.control({position: 'topright'});
+                legend.onAdd = function () {
+                    const div = L.DomUtil.create('div', 'legend');
+                    const limits = [Math.min(...allTemps), ...globalBreaks];
                     div.innerHTML = '<b style="display:block; margin-bottom:5px;">Temp Range (°F)</b>';
                     for (let i = 0; i < limits.length; i++) {
                         let from = limits[i].toFixed(1);
-                        let to = limits[i + 1] ? limits[i + 1].toFixed(1) : Math.max(...allTemps).toFixed(1);
-                        
-                        div.innerHTML +=
-                            '<i style="background:' + getColor(limits[i] + 0.1, breaks) + '"></i> ' +
-                            from + (to ? ' &ndash; ' + to + '<br>' : '+');
+                        let to = limits[i+1] ? limits[i+1].toFixed(1) : Math.max(...allTemps).toFixed(1);
+                        div.innerHTML += `<i style="background:${getColor(limits[i]+0.1, globalBreaks)}"></i> ${from} &ndash; ${to}<br>`;
                     }
                     return div;
                 };
                 legend.addTo(map);
-
             })
-            .catch(err => console.error("Error loading or styling GeoJSON:", err));
+            .catch(err => console.error("Error building time series application mapping layers:", err));
     </script>
 </body>
 </html>
