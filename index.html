@@ -3,12 +3,18 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>El Paso High-Performance Dashboard</title>
+    <title>El Paso High-Performance Climate Dashboard</title>
+    
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    
+    <script src="lst_data.js"></script>
+    
     <style>
-        body { margin: 0; padding: 0; font-family: 'Segoe UI', sans-serif; }
+        body { margin: 0; padding: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
         #map { width: 100vw; height: 100vh; }
+        
+        /* Dashboard Control Box */
         .control-panel { 
             position: absolute; bottom: 30px; left: 30px; 
             background: rgba(255, 255, 255, 0.95); padding: 20px; border-radius: 8px; 
@@ -16,7 +22,12 @@
         }
         .slider-container { margin-top: 15px; display: flex; align-items: center; gap: 10px; }
         input[type=range] { flex-grow: 1; cursor: pointer; }
-        .legend { line-height: 18px; color: #555; background: white; padding: 10px; border-radius: 5px; box-shadow: 0 0 15px rgba(0,0,0,0.2); }
+        
+        /* Legend Styling */
+        .legend {
+            line-height: 18px; color: #555; background: white; padding: 10px;
+            border-radius: 5px; box-shadow: 0 0 15px rgba(0,0,0,0.2);
+        }
         .legend i { width: 18px; height: 18px; float: left; margin-right: 8px; opacity: 0.8; }
     </style>
 </head>
@@ -24,9 +35,11 @@
 
     <div class="control-panel">
         <h3 style="margin: 0 0 5px 0;">El Paso Micro-Climate Timeline</h3>
-        <p style="margin: 0 0 15px 0; font-size: 13px; color: #666;">Optimized Load Engine</p>
+        <p style="margin: 0 0 15px 0; font-size: 13px; color: #666;">Historical Landsat Surface Temperature</p>
+        
         <div id="active-date" style="font-size: 22px; font-weight: bold; color: #bd0026;">Loading Assets...</div>
         <div id="temp-display" style="font-size: 14px; color: #333; margin-top: 5px;">Hover over cells</div>
+        
         <div class="slider-container">
             <input type="range" id="time-slider" min="0" max="0" value="0" disabled>
         </div>
@@ -35,16 +48,21 @@
     <div id="map"></div>
 
     <script>
+        // 1. Initialize the map over El Paso
         const map = L.map('map').setView([31.7619, -106.4850], 10);
-        L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', { attribution: '&copy; OpenStreetMap' }).addTo(map);
+        L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', { 
+            attribution: '&copy; OpenStreetMap' 
+        }).addTo(map);
 
         const gridLayerGroup = L.layerGroup().addTo(map);
         
+        // 2. Global Variables
         let gridGeometries = null;
-        let indexedData = {}; // Format: { "2023-01": { "grid_id_value": temp } }
+        let indexedData = {}; // Stores temp by time_id and grid_id
         let uniqueTimestamps = [];
         let globalBreaks = [];
 
+        // 3. Helper Functions
         function calculateQuantiles(values, numBands) {
             values.sort((a, b) => a - b);
             let quantiles = [];
@@ -69,6 +87,7 @@
             return `${months[parseInt(parts[1]) - 1]} ${parts[0]}`;
         }
 
+        // 4. Map Display Update Function
         function updateMapDisplay(timeID) {
             gridLayerGroup.clearLayers();
             const currentMonthData = indexedData[timeID] || {};
@@ -79,7 +98,10 @@
                     const temp = currentMonthData[cellID];
                     return {
                         fillColor: getColor(temp, globalBreaks),
-                        weight: 0.3, opacity: temp ? 0.1 : 0, color: 'white', fillOpacity: temp ? 0.75 : 0
+                        weight: 0.3, 
+                        opacity: temp ? 0.1 : 0, 
+                        color: 'white', 
+                        fillOpacity: temp ? 0.75 : 0
                     };
                 },
                 onEachFeature: function(feature, layer) {
@@ -93,7 +115,7 @@
                             layer.setStyle({ fillOpacity: 0.95, weight: 1.5, color: '#333' });
                         },
                         mouseout: function() {
-                            document.getElementById('temp-display').innerHTML = "Hover over cells for temperature";
+                            document.getElementById('temp-display').innerHTML = "Hover over cells";
                             subLayer.resetStyle(layer);
                         }
                     });
@@ -104,63 +126,68 @@
             document.getElementById('active-date').innerText = formatTimeLabel(timeID);
         }
 
-        // Parallel Asset Loading using Promise.all
-        Promise.all([
-            fetch('ElPaso_Grid_Geometry.geojson').then(res => res.json()),
-            fetch('ElPaso_LST_Metrics_Table.json').then(res => res.json())
-        ]).then(([geojsonData, tableData]) => {
-            gridGeometries = geojsonData;
-            
-            const timeSet = new Set();
-            const allTemps = [];
+        // 5. Main Execution: Fetch Geometry and merge with JS Data
+        fetch('elpaso_grid_geometry.geojson')
+            .then(res => res.json())
+            .then(geojsonData => {
+                gridGeometries = geojsonData;
+                
+                // Read the data directly from the lst_data.js script file
+                const tableData = myHeatData; 
+                
+                const timeSet = new Set();
+                const allTemps = [];
 
-            // Index data table records for efficient lookup performance
-            tableData.forEach(row => {
-                const tID = row.t_id;
-                const gID = row.g_id;
-                const temp = row.temp;
+                // Index data table records for efficient lookup
+                tableData.forEach(row => {
+                    const tID = row.t_id;
+                    const gID = row.g_id;
+                    const temp = row.temp;
 
-                if (tID && gID && temp !== null) {
-                    timeSet.add(tID);
-                    allTemps.push(temp);
+                    if (tID && gID && temp !== null) {
+                        timeSet.add(tID);
+                        allTemps.push(temp);
 
-                    if (!indexedData[tID]) indexedData[tID] = {};
-                    indexedData[tID][gID] = temp;
-                }
+                        if (!indexedData[tID]) indexedData[tID] = {};
+                        indexedData[tID][gID] = temp;
+                    }
+                });
+
+                uniqueTimestamps = Array.from(timeSet).sort();
+                globalBreaks = calculateQuantiles(allTemps, 5);
+
+                // Configure Slider
+                const slider = document.getElementById('time-slider');
+                slider.max = uniqueTimestamps.length - 1;
+                slider.value = 0;
+                slider.disabled = false;
+
+                // Load initial map
+                updateMapDisplay(uniqueTimestamps[0]);
+
+                // Listen for slider changes
+                slider.addEventListener('input', function(e) {
+                    updateMapDisplay(uniqueTimestamps[parseInt(e.target.value)]);
+                });
+
+                // Render Legend
+                const legend = L.control({position: 'topright'});
+                legend.onAdd = function () {
+                    const div = L.DomUtil.create('div', 'legend');
+                    const limits = [Math.min(...allTemps), ...globalBreaks];
+                    div.innerHTML = '<b style="display:block; margin-bottom:5px;">Temp Range (°F)</b>';
+                    for (let i = 0; i < limits.length; i++) {
+                        let from = limits[i].toFixed(1);
+                        let to = limits[i+1] ? limits[i+1].toFixed(1) : Math.max(...allTemps).toFixed(1);
+                        div.innerHTML += `<i style="background:${getColor(limits[i]+0.1, globalBreaks)}"></i> ${from} &ndash; ${to}<br>`;
+                    }
+                    return div;
+                };
+                legend.addTo(map);
+            }).catch(err => {
+                console.error("Initialization error:", err);
+                document.getElementById('active-date').innerText = "Load failed. Check file paths.";
             });
-
-            uniqueTimestamps = Array.from(timeSet).sort();
-            globalBreaks = calculateQuantiles(allTemps, 5);
-
-            const slider = document.getElementById('time-slider');
-            slider.max = uniqueTimestamps.length - 1;
-            slider.value = 0;
-            slider.disabled = false;
-
-            updateMapDisplay(uniqueTimestamps[0]);
-
-            slider.addEventListener('input', function(e) {
-                updateMapDisplay(uniqueTimestamps[parseInt(e.target.value)]);
-            });
-
-            // Append Legend
-            const legend = L.control({position: 'topright'});
-            legend.onAdd = function () {
-                const div = L.DomUtil.create('div', 'legend');
-                const limits = [Math.min(...allTemps), ...globalBreaks];
-                div.innerHTML = '<b style="display:block; margin-bottom:5px;">Temp Range (°F)</b>';
-                for (let i = 0; i < limits.length; i++) {
-                    let from = limits[i].toFixed(1);
-                    let to = limits[i+1] ? limits[i+1].toFixed(1) : Math.max(...allTemps).toFixed(1);
-                    div.innerHTML += `<i style="background:${getColor(limits[i]+0.1, globalBreaks)}"></i> ${from} &ndash; ${to}<br>`;
-                }
-                return div;
-            };
-            legend.addTo(map);
-        }).catch(err => {
-            console.error("Initialization error:", err);
-            document.getElementById('active-date').innerText = "Load failed.";
-        });
     </script>
 </body>
 </html>
