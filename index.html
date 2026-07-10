@@ -62,6 +62,7 @@
 
         // 3. Helper Functions
         function calculateQuantiles(values, numBands) {
+            // This sorts the array from lowest to highest in place
             values.sort((a, b) => a - b);
             let quantiles = [];
             for (let i = 1; i < numBands; i++) {
@@ -126,7 +127,6 @@
 
         // 5. Main Execution: Fetch Geometry and Data in Parallel
         Promise.all([
-            // Requesting the exact file names you provided
             fetch('ElPaso_Grid_Geometry.geojson').then(res => res.json()),
             fetch('ElPaso_LST_Metrics_Table.geojson').then(res => res.json())
         ]).then(([geojsonData, tableData]) => {
@@ -145,7 +145,6 @@
 
             // Index data table records for efficient lookup
             records.forEach(row => {
-                // Handle different possible key names from Earth Engine exports
                 const tID = row.t_id || row.time_id;
                 const gID = row.g_id || row.grid_id;
                 const temp = row.temp !== undefined ? row.temp : row.mean;
@@ -160,7 +159,9 @@
             });
 
             uniqueTimestamps = Array.from(timeSet).sort();
-            globalBreaks = calculateQuantiles(allTemps, 5);
+            
+            // This function inherently sorts the allTemps array from lowest to highest
+            globalBreaks = calculateQuantiles(allTemps, 5); 
 
             // Configure Slider
             const slider = document.getElementById('time-slider');
@@ -180,20 +181,27 @@
                 updateMapDisplay(uniqueTimestamps[parseInt(e.target.value)]);
             });
 
-            // Render Legend
+            // Render Legend (FIXED: Avoiding call stack overflow by using array index instead of Math.min/max)
             const legend = L.control({position: 'topright'});
             legend.onAdd = function () {
                 const div = L.DomUtil.create('div', 'legend');
-                const limits = [Math.min(...allTemps), ...globalBreaks];
+                
+                // Since calculateQuantiles already sorted allTemps, we just grab the first and last items!
+                const minTemp = allTemps[0];
+                const maxTemp = allTemps[allTemps.length - 1];
+                
+                const limits = [minTemp, ...globalBreaks];
+                
                 div.innerHTML = '<b style="display:block; margin-bottom:5px;">Temp Range (°F)</b>';
                 for (let i = 0; i < limits.length; i++) {
                     let from = limits[i].toFixed(1);
-                    let to = limits[i+1] ? limits[i+1].toFixed(1) : Math.max(...allTemps).toFixed(1);
+                    let to = limits[i+1] ? limits[i+1].toFixed(1) : maxTemp.toFixed(1);
                     div.innerHTML += `<i style="background:${getColor(limits[i]+0.1, globalBreaks)}"></i> ${from} &ndash; ${to}<br>`;
                 }
                 return div;
             };
             legend.addTo(map);
+            
         }).catch(err => {
             console.error("Initialization error:", err);
             document.getElementById('active-date').innerText = "Load failed. Check GitHub build status.";
