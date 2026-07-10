@@ -8,8 +8,6 @@
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     
-    <script src="lst_data.js"></script>
-    
     <style>
         body { margin: 0; padding: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
         #map { width: 100vw; height: 100vh; }
@@ -37,7 +35,7 @@
         <h3 style="margin: 0 0 5px 0;">El Paso Micro-Climate Timeline</h3>
         <p style="margin: 0 0 15px 0; font-size: 13px; color: #666;">Historical Landsat Surface Temperature</p>
         
-        <div id="active-date" style="font-size: 22px; font-weight: bold; color: #bd0026;">Loading Assets...</div>
+        <div id="active-date" style="font-size: 22px; font-weight: bold; color: #bd0026;">Loading Data...</div>
         <div id="temp-display" style="font-size: 14px; color: #333; margin-top: 5px;">Hover over cells</div>
         
         <div class="slider-container">
@@ -126,68 +124,80 @@
             document.getElementById('active-date').innerText = formatTimeLabel(timeID);
         }
 
-        // 5. Main Execution: Fetch Geometry and merge with JS Data
-        fetch('elpaso_grid_geometry.geojson')
-            .then(res => res.json())
-            .then(geojsonData => {
-                gridGeometries = geojsonData;
-                
-                // Read the data directly from the lst_data.js script file
-                const tableData = myHeatData; 
-                
-                const timeSet = new Set();
-                const allTemps = [];
+        // 5. Main Execution: Fetch Geometry and Data in Parallel
+        Promise.all([
+            // Requesting the exact file names you provided
+            fetch('ElPaso_Grid_Geometry.geojson').then(res => res.json()),
+            fetch('ElPaso_LST_Metrics_Table.geojson').then(res => res.json())
+        ]).then(([geojsonData, tableData]) => {
+            gridGeometries = geojsonData;
+            
+            const timeSet = new Set();
+            const allTemps = [];
 
-                // Index data table records for efficient lookup
-                tableData.forEach(row => {
-                    const tID = row.t_id;
-                    const gID = row.g_id;
-                    const temp = row.temp;
+            // Robust Parser: Detects if the data is a GeoJSON FeatureCollection or standard JSON array
+            let records = [];
+            if (tableData.features) {
+                records = tableData.features.map(f => f.properties);
+            } else if (Array.isArray(tableData)) {
+                records = tableData;
+            }
 
-                    if (tID && gID && temp !== null) {
-                        timeSet.add(tID);
-                        allTemps.push(temp);
+            // Index data table records for efficient lookup
+            records.forEach(row => {
+                // Handle different possible key names from Earth Engine exports
+                const tID = row.t_id || row.time_id;
+                const gID = row.g_id || row.grid_id;
+                const temp = row.temp !== undefined ? row.temp : row.mean;
 
-                        if (!indexedData[tID]) indexedData[tID] = {};
-                        indexedData[tID][gID] = temp;
-                    }
-                });
+                if (tID && gID && temp !== null && !isNaN(temp)) {
+                    timeSet.add(tID);
+                    allTemps.push(temp);
 
-                uniqueTimestamps = Array.from(timeSet).sort();
-                globalBreaks = calculateQuantiles(allTemps, 5);
-
-                // Configure Slider
-                const slider = document.getElementById('time-slider');
-                slider.max = uniqueTimestamps.length - 1;
-                slider.value = 0;
-                slider.disabled = false;
-
-                // Load initial map
-                updateMapDisplay(uniqueTimestamps[0]);
-
-                // Listen for slider changes
-                slider.addEventListener('input', function(e) {
-                    updateMapDisplay(uniqueTimestamps[parseInt(e.target.value)]);
-                });
-
-                // Render Legend
-                const legend = L.control({position: 'topright'});
-                legend.onAdd = function () {
-                    const div = L.DomUtil.create('div', 'legend');
-                    const limits = [Math.min(...allTemps), ...globalBreaks];
-                    div.innerHTML = '<b style="display:block; margin-bottom:5px;">Temp Range (°F)</b>';
-                    for (let i = 0; i < limits.length; i++) {
-                        let from = limits[i].toFixed(1);
-                        let to = limits[i+1] ? limits[i+1].toFixed(1) : Math.max(...allTemps).toFixed(1);
-                        div.innerHTML += `<i style="background:${getColor(limits[i]+0.1, globalBreaks)}"></i> ${from} &ndash; ${to}<br>`;
-                    }
-                    return div;
-                };
-                legend.addTo(map);
-            }).catch(err => {
-                console.error("Initialization error:", err);
-                document.getElementById('active-date').innerText = "Load failed. Check file paths.";
+                    if (!indexedData[tID]) indexedData[tID] = {};
+                    indexedData[tID][gID] = temp;
+                }
             });
+
+            uniqueTimestamps = Array.from(timeSet).sort();
+            globalBreaks = calculateQuantiles(allTemps, 5);
+
+            // Configure Slider
+            const slider = document.getElementById('time-slider');
+            slider.max = uniqueTimestamps.length - 1;
+            slider.value = 0;
+            slider.disabled = false;
+
+            // Load initial map
+            if (uniqueTimestamps.length > 0) {
+                updateMapDisplay(uniqueTimestamps[0]);
+            } else {
+                document.getElementById('active-date').innerText = "No data found.";
+            }
+
+            // Listen for slider changes
+            slider.addEventListener('input', function(e) {
+                updateMapDisplay(uniqueTimestamps[parseInt(e.target.value)]);
+            });
+
+            // Render Legend
+            const legend = L.control({position: 'topright'});
+            legend.onAdd = function () {
+                const div = L.DomUtil.create('div', 'legend');
+                const limits = [Math.min(...allTemps), ...globalBreaks];
+                div.innerHTML = '<b style="display:block; margin-bottom:5px;">Temp Range (°F)</b>';
+                for (let i = 0; i < limits.length; i++) {
+                    let from = limits[i].toFixed(1);
+                    let to = limits[i+1] ? limits[i+1].toFixed(1) : Math.max(...allTemps).toFixed(1);
+                    div.innerHTML += `<i style="background:${getColor(limits[i]+0.1, globalBreaks)}"></i> ${from} &ndash; ${to}<br>`;
+                }
+                return div;
+            };
+            legend.addTo(map);
+        }).catch(err => {
+            console.error("Initialization error:", err);
+            document.getElementById('active-date').innerText = "Load failed. Check GitHub build status.";
+        });
     </script>
 </body>
 </html>
